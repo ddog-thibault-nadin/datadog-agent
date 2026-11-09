@@ -26,8 +26,10 @@ type Provider interface {
 }
 
 type defaultHTTPClientProvider struct {
-	runnerConfig        *config.Config
-	enforceURLAllowlist bool
+	runnerConfig            *config.Config
+	enforceURLAllowlist     bool
+	urlAllowlistOptIn       bool
+	sameOriginRedirectsOnly bool
 }
 
 // ProviderOption configures optional behavior on the default HTTP client provider.
@@ -37,6 +39,23 @@ type ProviderOption func(*defaultHTTPClientProvider)
 func WithURLAllowlistDisabled() ProviderOption {
 	return func(p *defaultHTTPClientProvider) {
 		p.enforceURLAllowlist = false
+	}
+}
+
+// WithURLAllowlistIfConfigured enforces the URL allowlist only when the operator
+// set http_allowlist, so bundles that predate it keep working when it is unset.
+func WithURLAllowlistIfConfigured() ProviderOption {
+	return func(p *defaultHTTPClientProvider) {
+		p.enforceURLAllowlist = true
+		p.urlAllowlistOptIn = true
+	}
+}
+
+// WithSameOriginRedirectsOnly makes all clients created by this provider refuse
+// redirects to another origin, see RunnerHttpClientConfig.SameOriginRedirectsOnly.
+func WithSameOriginRedirectsOnly() ProviderOption {
+	return func(p *defaultHTTPClientProvider) {
+		p.sameOriginRedirectsOnly = true
 	}
 }
 
@@ -52,7 +71,7 @@ func NewDefaultProvider(runnerConfig *config.Config, opts ...ProviderOption) Pro
 }
 
 func (d defaultHTTPClientProvider) wrapClient(client HTTPClient) HTTPClient {
-	if d.enforceURLAllowlist {
+	if d.enforceURLAllowlist && (!d.urlAllowlistOptIn || d.runnerConfig.AllowlistConfigured) {
 		return &urlAllowlistClient{inner: client, config: d.runnerConfig}
 	}
 	return client
@@ -60,7 +79,8 @@ func (d defaultHTTPClientProvider) wrapClient(client HTTPClient) HTTPClient {
 
 func (d defaultHTTPClientProvider) NewDefaultClient() (HTTPClient, error) {
 	client, err := NewRunnerHttpClient(&RunnerHttpClientConfig{
-		HTTPTimeout: d.runnerConfig.HTTPTimeout,
+		HTTPTimeout:             d.runnerConfig.HTTPTimeout,
+		SameOriginRedirectsOnly: d.sameOriginRedirectsOnly,
 	})
 	if err != nil {
 		return nil, util.DefaultActionErrorWithDisplayError(fmt.Errorf("error creating HTTP client: %w", err), "Failed to create HTTP client")
@@ -69,6 +89,11 @@ func (d defaultHTTPClientProvider) NewDefaultClient() (HTTPClient, error) {
 }
 
 func (d defaultHTTPClientProvider) NewClient(clientConfig *RunnerHttpClientConfig) (HTTPClient, error) {
+	if d.sameOriginRedirectsOnly && !clientConfig.SameOriginRedirectsOnly {
+		withRedirectPolicy := *clientConfig
+		withRedirectPolicy.SameOriginRedirectsOnly = true
+		clientConfig = &withRedirectPolicy
+	}
 	client, err := NewRunnerHttpClient(clientConfig)
 	if err != nil {
 		return nil, util.DefaultActionErrorWithDisplayError(fmt.Errorf("error creating HTTP client: %w", err), "Failed to create HTTP client")

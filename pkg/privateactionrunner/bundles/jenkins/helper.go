@@ -13,8 +13,16 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/DataDog/datadog-agent/pkg/privateactionrunner/adapters/config"
+	"github.com/DataDog/datadog-agent/pkg/privateactionrunner/bundle-support/httpclient"
 	"github.com/DataDog/datadog-agent/pkg/privateactionrunner/libs/privateconnection"
 )
+
+// newHTTPClientProvider checks http_allowlist on the first request only, so
+// redirects are kept on the connection domain's origin.
+func newHTTPClientProvider(runnerConfig *config.Config) httpclient.Provider {
+	return httpclient.NewDefaultProvider(runnerConfig, httpclient.WithURLAllowlistIfConfigured(), httpclient.WithSameOriginRedirectsOnly())
+}
 
 type DomainAndHeaders struct {
 	Domain  string

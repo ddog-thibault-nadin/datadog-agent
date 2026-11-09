@@ -23,6 +23,7 @@ import (
 type Config struct {
 	ActionsAllowlist                   ActionsAllowlist
 	Allowlist                          []string
+	AllowlistConfigured                bool
 	AllowIMDSEndpoint                  bool
 	KubernetesAllowedCustomResources   []string
 	RShellAllowedPaths                 []string

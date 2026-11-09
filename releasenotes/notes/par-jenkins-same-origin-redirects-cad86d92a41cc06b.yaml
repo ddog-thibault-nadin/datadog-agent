@@ -1,0 +1,21 @@
+# Each section from every release note are combined when the
+# CHANGELOG.rst is rendered. So the text needs to be worded so that
+# it does not depend on any information only available in another
+# section. This may mean repeating some details, but each section
+# must be readable independently of the other.
+#
+# Each section note must be formatted as reStructuredText.
+---
+security:
+  - |
+    Private Action Runner Jenkins actions now apply
+    ``private_action_runner.http_allowlist`` when it is set, so a Jenkins
+    connection domain outside the list is refused. When ``http_allowlist``
+    is unset, Jenkins actions keep reaching any domain as before.
+fixes:
+  - |
+    Private Action Runner Jenkins actions no longer follow HTTP redirects to
+    a different scheme, host or port than the Jenkins connection's domain.
+    Redirects on the same host, including an upgrade from ``http`` to
+    ``https`` on default ports, are still followed. A redirect to another
+    origin now fails the action instead of being followed.

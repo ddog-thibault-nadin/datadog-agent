@@ -110,6 +110,22 @@ func TestNewDefaultProvider_WithURLAllowlistDisabled(t *testing.T) {
 	assert.False(t, isWrapped, "client should not be wrapped when WithURLAllowlistDisabled is used")
 }
 
+func TestNewDefaultProvider_WithURLAllowlistIfConfigured(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		configured bool
+	}{{"unset", false}, {"set", true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{Allowlist: []string{}, AllowlistConfigured: tt.configured}
+			client, err := NewDefaultProvider(cfg, WithURLAllowlistIfConfigured()).NewDefaultClient()
+			require.NoError(t, err)
+
+			_, isWrapped := client.(*urlAllowlistClient)
+			assert.Equal(t, tt.configured, isWrapped)
+		})
+	}
+}
+
 type fakeHTTPClient struct {
 	response *http.Response
 	called   bool

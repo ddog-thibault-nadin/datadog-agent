@@ -592,6 +592,21 @@ func TestFromDDConfigPARRestrictedShellPrivilegedElevatableCommandsWarnsForUnnam
 	assert.NotContains(t, logs, `"rshell:journalctl"`)
 }
 
+func TestFromDDConfigHTTPAllowlistConfigured(t *testing.T) {
+	mockConfig := configmock.New(t)
+	mockConfig.SetInTest(par.PrivateKey, "")
+	mockConfig.SetInTest(par.URN, "")
+
+	cfg, err := FromDDConfig(mockConfig, nil)
+	require.NoError(t, err)
+	assert.False(t, cfg.AllowlistConfigured)
+
+	mockConfig.SetInTest(par.HTTPAllowlist, []string{"jenkins.example.com"})
+	cfg, err = FromDDConfig(mockConfig, nil)
+	require.NoError(t, err)
+	assert.True(t, cfg.AllowlistConfigured)
+}
+
 func TestFromDDConfigPARRestrictedShellPrivilegedNarrowingConfiguredFlags(t *testing.T) {
 	mockConfig := configmock.New(t)
 	mockConfig.SetInTest(par.PrivateKey, "")

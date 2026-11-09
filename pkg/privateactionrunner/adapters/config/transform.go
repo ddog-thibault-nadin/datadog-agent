@@ -105,6 +105,7 @@ func FromDDConfig(config config.Component, metricsClient statsd.ClientInterface)
 		AgentHTTPClient:                    agentHTTPClient,
 		ActionsAllowlist:                   makeActionsAllowlist(config),
 		Allowlist:                          config.GetStringSlice(par.HTTPAllowlist),
+		AllowlistConfigured:                config.IsConfigured(par.HTTPAllowlist),
 		AllowIMDSEndpoint:                  config.GetBool(par.HTTPAllowIMDSEndpoint),
 		KubernetesAllowedCustomResources:   kubernetesAllowedCustomResources(config),
 		RShellAllowedPaths:                 rshellAllowedPaths(config),
