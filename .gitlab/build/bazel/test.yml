@@ -60,6 +60,21 @@
   extends: [.bazel:test:reporting, .bazel:test]
   script:
     - !reference [.bazel:test:reporting:ci_links]
+    - |
+      echo "== env vars whose name contains BAZEL (values of secret-looking ones hidden)"
+      env | awk -F= 'toupper($1) ~ /BAZEL/ { if (toupper($1) ~ /TOKEN|SECRET|KEY|PASSWORD/) print $1 "=<hidden>"; else print }'
+      echo "== bazel on PATH"
+      type -a bazel
+      if head -c 2 "$(command -v bazel)" | grep -q '#!'; then head -n 60 "$(command -v bazel)"; fi
+      echo "== bazel rc files"
+      for f in /etc/bazel.bazelrc "$HOME/.bazelrc" "$CI_PROJECT_DIR/user.bazelrc"; do if [ -f "$f" ]; then echo "-- $f"; cat "$f"; fi; done
+      echo "== .bazeliskrc files up the tree and in HOME"
+      d="$CI_PROJECT_DIR"; while :; do if [ -f "$d/.bazeliskrc" ]; then echo "-- $d/.bazeliskrc"; cat "$d/.bazeliskrc"; fi; [ "$d" = / ] && break; d=$(dirname "$d"); done
+      if [ -f "$HOME/.bazeliskrc" ]; then echo "-- $HOME/.bazeliskrc"; cat "$HOME/.bazeliskrc"; fi
+      echo "== pre-build scripts"
+      if [ -d /configmap/scripts/pre-build-scripts ]; then ls -la /configmap/scripts/pre-build-scripts; awk 'tolower($0) ~ /bazel|downloader/ { print FILENAME ":" FNR ": " $0 }' /configmap/scripts/pre-build-scripts/*; fi
+      echo "== bazel --announce_rc"
+      bazel info release --announce_rc
     - bazel test --keep_going --remote_download_outputs=toplevel --build_event_json_file=$BEP_FILE //...
 
 bazel:test:linux-amd64:
