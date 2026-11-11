@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import IO, NamedTuple
 
+from tasks.flavor import FipsBackend
 from tasks.libs.common.color import color_message
 from tasks.libs.common.utils import get_repo_root, join_command
 from tasks.libs.types.arch import Arch
@@ -222,6 +223,7 @@ def bazel(
     capture_stderr: bool = False,
     capture_output: bool = False,
     env: dict[str, str] | None = None,
+    fips_backend: FipsBackend = FipsBackend.none,
     ignore_errors: bool = False,
     input: str | None = None,
 ) -> str | subprocess.CompletedProcess[str]:
@@ -231,6 +233,7 @@ def bazel(
         returning normally instead of failing fast.  Inert when `ignore_errors` is set, since the
         caller then decides what to do with the raw `CompletedProcess`.
     env: environment variables when passing them through the corresponding Bazel `--*_env=` flags is not suitable.
+    fips_backend: the FIPS backend to build with, as AGENT_FLAVOR=fips also requests msgo's.
     input: text to pass to the Bazel subprocess stdin.
     ignore_errors: do not fail fast, but instead return the raw `CompletedProcess`, whether the Bazel command
         succeeded or not.
@@ -241,7 +244,7 @@ def bazel(
 
     if not (bazelisk := shutil.which("bazelisk")):  # `/usr/bin/bazel` may otherwise take precedence in DD Workspaces
         raise SystemExit(bazel_not_found_message("red"))
-    cmd = (bazelisk, *_insert_omnibazel_flags(args))
+    cmd = (bazelisk, *_insert_omnibazel_flags(args, fips_backend))
     cmdline = join_command(cmd)
     print(color_message(cmdline.replace(bazelisk, "bazel", 1), "bold"), file=sys.stderr)  # brevity: abspath -> bazel
 
@@ -264,9 +267,9 @@ def bazel(
     return completed.stdout if capture_output else ""
 
 
-def _bazel_output_path(target: str, args: list[str]) -> str:
+def _bazel_output_path(target: str, args: list[str], fips_backend: FipsBackend) -> str:
     # We need cquery to find the output path that has the configuration hash in it.
-    output = bazel("cquery", "--output=files", target, *args, capture_output=True).strip()
+    output = bazel("cquery", "--output=files", target, *args, capture_output=True, fips_backend=fips_backend).strip()
     outputs = [line for line in output.splitlines() if line]
     if len(outputs) != 1:
         raise SystemExit(f"Expected exactly one output file for Bazel target {target!r}, got: {outputs!r}")
@@ -277,7 +280,11 @@ def _bazel_output_path(target: str, args: list[str]) -> str:
 
 
 def build_binary_with_bazel(
-    target: str, args: list[str] | None = None, bin_path: str = None, embedded_path: str | None = None
+    target: str,
+    args: list[str] | None = None,
+    bin_path: str = None,
+    embedded_path: str | None = None,
+    fips_backend: FipsBackend = FipsBackend.none,
 ) -> None:
     """Build a Bazel target and copy its output to bin_path.
 
@@ -289,10 +296,11 @@ def build_binary_with_bazel(
         against.
         When set, rewrites the copied binary's RPATH to point there instead of
         Bazel's sandbox paths.
+        fips_backend: the FIPS backend to build with.
     """
     args = args or []
-    bazel("build", target, *args)
-    src = _bazel_output_path(target, args)
+    bazel("build", target, *args, fips_backend=fips_backend)
+    src = _bazel_output_path(target, args, fips_backend)
 
     if bin_path:
         os.makedirs(os.path.dirname(bin_path), exist_ok=True)
@@ -309,13 +317,15 @@ def build_binary_with_bazel(
             bazel("run", "//bazel/rules:replace_prefix", "--", "--prefix", embedded_path, os.path.abspath(bin_path))
 
 
-def _insert_omnibazel_flags(args: tuple[str, ...]) -> tuple[str, ...]:
+def _insert_omnibazel_flags(args: tuple[str, ...], fips_backend: FipsBackend) -> tuple[str, ...]:
     """Insert either --platforms for FIPS or --//packages/agent:flavor, then --//:install_dir and
     --//:output_config_dir, pinned from the corresponding omnibus build environment variables.
     💡 Mirrors `omnibazel_flags` in omnibus/lib/ostools.rb.
     """
+    if fips_backend not in (FipsBackend.none, FipsBackend.msgo):
+        raise NotImplementedError(f"Bazel does not support --fips-backend={fips_backend}.")
     flags = []
-    if (agent_flavor := os.environ.get("AGENT_FLAVOR")) == "fips":
+    if fips_backend == FipsBackend.msgo or (agent_flavor := os.environ.get("AGENT_FLAVOR")) == "fips":
         flags.append(f"--platforms=//bazel/platforms:{platform.system().lower()}_{Arch.local().bazel_cpu}_fips")
     elif agent_flavor:
         flags.append(f"--//packages/agent:flavor={agent_flavor}")

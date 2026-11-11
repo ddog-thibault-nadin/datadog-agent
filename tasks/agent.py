@@ -200,7 +200,12 @@ def build(
 
     with gitlab_section("Build agent", collapsed=True):
         if enable_bazel:
-            build_binary_with_bazel(f"//cmd/{flavor_cmd}", bin_path=agent_bin, embedded_path=embedded_path)
+            build_binary_with_bazel(
+                f"//cmd/{flavor_cmd}",
+                bin_path=agent_bin,
+                embedded_path=embedded_path,
+                fips_backend=flavor.fips_backend(),
+            )
         else:
             go_build(
                 ctx,

@@ -46,9 +46,9 @@ def build(
             )
         if race:
             raise NotImplementedError("--enable-bazel does not support --race. Use bazel build directly.")
-        if fips_backend != FipsBackend.none:
-            raise NotImplementedError("--enable-bazel does not support --fips-backend.")
-        build_binary_with_bazel("//cmd/secret-generic-connector:secret-generic-connector", bin_path=BIN_PATH)
+        build_binary_with_bazel(
+            "//cmd/secret-generic-connector:secret-generic-connector", bin_path=BIN_PATH, fips_backend=fips_backend
+        )
         return
 
     version = get_version(ctx, include_git=True)

@@ -114,6 +114,12 @@ def dd_agent_go_binary(
             "//conditions:default": sorted(COMMON_TAGS | gotags),
         })
 
+    # Go's -r sets the RUNPATH, which also applies to the OpenSSL that msgo dlopens.
+    kwargs["gc_linkopts"] = kwargs.get("gc_linkopts", []) + select({
+        "//packages/agent:linux_fips": ["-r", "$(INSTALL_DIR)/embedded/lib"],
+        "//conditions:default": [],
+    })
+
     go_binary(
         name = name,
         toolchains = kwargs.pop("toolchains", []) + [
