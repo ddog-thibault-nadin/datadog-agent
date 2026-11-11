@@ -58,6 +58,13 @@ const (
 	ConceptPeerKafkaClusterID       Concept = "peer.kafka.cluster.id"
 )
 
+// Peer Tags computed by the Agent for stats aggregation. They have no source
+// attributes in mappings.json: spans never carry them.
+const (
+	ConceptPeerK8sClusterUID Concept = "peer.k8s.cluster.uid"
+	ConceptPeerK8sNamespace  Concept = "peer.k8s.namespace"
+)
+
 // Stats Aggregation
 const (
 	ConceptHTTPStatusCode Concept = "http.status_code"
