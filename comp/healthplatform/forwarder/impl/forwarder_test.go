@@ -9,9 +9,16 @@ package forwarderimpl
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -41,7 +48,93 @@ func newTestForwarderWithTelemetry(t *testing.T, cfg config.Component, tel telem
 		httpClient:   buildHTTPClient(cfg),
 		log:          logmock.New(t),
 		httpErrors:   newHTTPErrorsCounter(tel),
+		errors:       newErrorsCounter(tel),
 	}
+}
+
+// timeoutError is a net.Error that reports a timeout, like the errors returned by a dial deadline.
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+
+// clientDoError wraps err the way http.Client.Do does.
+func clientDoError(err error) error {
+	return &url.Error{Op: "Post", URL: "https://agenthealth-intake.datadoghq.com./api/v2/agenthealth", Err: err}
+}
+
+func TestTransportErrorType(t *testing.T) {
+	dial := func(err error) error { return clientDoError(&net.OpError{Op: "dial", Net: "tcp", Err: err}) }
+	for name, tc := range map[string]struct {
+		err  error
+		want string
+	}{
+		"dns not found":       {dial(&net.DNSError{Err: "no such host", Name: "agenthealth-intake.invalid", IsNotFound: true}), errorTypeDNS},
+		"dns timeout":         {dial(&net.DNSError{Err: "i/o timeout", Name: "agenthealth-intake.datadoghq.com", IsTimeout: true}), errorTypeDNS},
+		"connection refused":  {dial(&os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}), errorTypeConnection},
+		"network unreachable": {dial(&os.SyscallError{Syscall: "connect", Err: syscall.ENETUNREACH}), errorTypeConnection},
+		"dial timeout":        {dial(timeoutError{}), errorTypeTimeout},
+		"client timeout":      {clientDoError(context.DeadlineExceeded), errorTypeTimeout},
+		"tls not a handshake": {clientDoError(tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}), errorTypeTLS},
+		"tls unknown CA":      {clientDoError(x509.UnknownAuthorityError{}), errorTypeTLS},
+		"tls verification":    {clientDoError(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}), errorTypeTLS},
+		"reset after connect": {clientDoError(&net.OpError{Op: "read", Net: "tcp", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}), errorTypeOther},
+		"unknown":             {clientDoError(errors.New("boom")), errorTypeOther},
+		"canceled by caller":  {clientDoError(context.Canceled), ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, transportErrorType(tc.err))
+		})
+	}
+}
+
+func TestSendCountsTransportErrors(t *testing.T) {
+	// A listener that is closed right away gives a local port that refuses connections.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	refusedURL := "http://" + ln.Addr().String()
+	require.NoError(t, ln.Close())
+
+	// A server that never answers within the client timeout.
+	hang := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-hang:
+		case <-r.Context().Done():
+		}
+	}))
+	defer slow.Close()
+	defer close(hang)
+
+	cfg := config.NewMock(t)
+	cfg.SetInTest("api_key", "test-api-key")
+	tel := telemetrymock.New(t)
+	// One forwarder per telemetry registry: registering its counters twice would panic.
+	fwd := newTestForwarderWithTelemetry(t, cfg, tel)
+	fwd.httpClient.Timeout = 200 * time.Millisecond
+	for _, target := range []string{refusedURL, slow.URL} {
+		fwd.intakeDomain, fwd.intakeURL = target, target+intakeEndpointPath
+		_, err := fwd.Send(context.Background(), &healthplatform.HealthReport{})
+		require.Error(t, err)
+	}
+
+	metrics, err := tel.GetCountMetric("forwarder", "errors")
+	require.NoError(t, err)
+	got := map[string]float64{}
+	for _, m := range metrics {
+		assert.Equal(t, "agenthealth", m.Tags()["endpoint"])
+		assert.Equal(t, "health_platform", m.Tags()["forwarder"])
+		got[m.Tags()["domain"]+" "+m.Tags()["error_type"]] = m.Value()
+	}
+	assert.Equal(t, map[string]float64{
+		refusedURL + " " + errorTypeConnection: 1,
+		slow.URL + " " + errorTypeTimeout:      1,
+	}, got)
+
+	// Transport errors are not HTTP errors: forwarder.http_errors has no series at all.
+	_, err = tel.GetCountMetric("forwarder", "http_errors")
+	assert.ErrorContains(t, err, "not found")
 }
 
 func TestSendCountsHTTPErrors(t *testing.T) {

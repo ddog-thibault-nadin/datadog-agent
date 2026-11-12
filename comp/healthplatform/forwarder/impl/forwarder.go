@@ -9,9 +9,12 @@ package forwarderimpl
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -40,6 +43,17 @@ const (
 	intakeEndpointName = "agenthealth"
 )
 
+// `error_type` values of forwarder.errors. They reuse the default forwarder's transactions.errors
+// values where one exists; `timeout` is added because transactions.errors files timeouts under its
+// catch-all.
+const (
+	errorTypeDNS        = "dns_lookup_failure"
+	errorTypeConnection = "connection_failure"
+	errorTypeTLS        = "tls_handshake_failure"
+	errorTypeTimeout    = "timeout"
+	errorTypeOther      = "cant_send"
+)
+
 // forwarder is a stateless HTTP client. It has no ticker or provider — the
 // egress component owns the send cadence.
 type forwarder struct {
@@ -49,6 +63,7 @@ type forwarder struct {
 	httpClient   *http.Client
 	log          log.Component
 	httpErrors   telemetry.Counter
+	errors       telemetry.Counter
 }
 
 // Requires defines the dependencies for the forwarder.
@@ -71,6 +86,18 @@ func newHTTPErrorsCounter(tel telemetry.Component) telemetry.Counter {
 	)
 }
 
+// newErrorsCounter registers the forwarder.errors counter: requests that got no HTTP response at all.
+// It mirrors the default forwarder's transactions.errors (domain, endpoint, error_type) with an extra
+// `forwarder` tag, the same way forwarder.http_errors mirrors transactions.http_errors.
+func newErrorsCounter(tel telemetry.Component) telemetry.Counter {
+	return tel.NewCounter(
+		"forwarder",
+		"errors",
+		[]string{"domain", "endpoint", "error_type", "forwarder"},
+		"Count of requests to Datadog intakes that failed without an HTTP response, per error type and forwarder",
+	)
+}
+
 // NewComponent creates a forwarder. It never registers lifecycle hooks; there is nothing
 // to clean up for a stateless HTTP client.
 func NewComponent(reqs Requires) forwarderdef.Component {
@@ -82,6 +109,7 @@ func NewComponent(reqs Requires) forwarderdef.Component {
 		httpClient:   buildHTTPClient(reqs.Config),
 		log:          reqs.Log,
 		httpErrors:   newHTTPErrorsCounter(reqs.Telemetry),
+		errors:       newErrorsCounter(reqs.Telemetry),
 	}
 }
 
@@ -113,6 +141,9 @@ func (f *forwarder) Send(ctx context.Context, report *healthplatform.HealthRepor
 
 	resp, err := f.httpClient.Do(req)
 	if err != nil {
+		if errorType := transportErrorType(err); errorType != "" {
+			f.errors.Inc(f.intakeDomain, intakeEndpointName, errorType, forwarderName)
+		}
 		return 0, fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -126,6 +157,47 @@ func (f *forwarder) Send(ctx context.Context, report *healthplatform.HealthRepor
 	}
 
 	return len(payload), nil
+}
+
+// transportErrorType returns the `error_type` tag of forwarder.errors for an error returned by
+// http.Client.Do (the request got no HTTP response), or "" when the error must not be counted.
+//
+// Order matters because the cases overlap: a DNS timeout is both a *net.DNSError and a timeout, and a
+// dial timeout is both a dial *net.OpError and a timeout.
+func transportErrorType(err error) string {
+	// The caller gave up (e.g. egress shutting down): the intake was not unreachable.
+	if errors.Is(err, context.Canceled) {
+		return ""
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return errorTypeDNS
+	}
+
+	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+		return errorTypeTimeout
+	}
+
+	var (
+		recordErr   tls.RecordHeaderError
+		verifyErr   *tls.CertificateVerificationError
+		unknownCA   x509.UnknownAuthorityError
+		hostnameErr x509.HostnameError
+		invalidCert x509.CertificateInvalidError
+	)
+	if errors.As(err, &recordErr) || errors.As(err, &verifyErr) || errors.As(err, &unknownCA) ||
+		errors.As(err, &hostnameErr) || errors.As(err, &invalidCert) {
+		return errorTypeTLS
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return errorTypeConnection
+	}
+
+	return errorTypeOther
 }
 
 // buildIntakeURL returns the URL health reports are POSTed to: the health platform intake of `site`,
