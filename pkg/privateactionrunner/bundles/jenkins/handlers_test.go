@@ -73,11 +73,12 @@ func TestHandlersRejectRedirectsOutsideDomain(t *testing.T) {
 	assert.Zero(t, otherHits.Load(), "no request may reach an origin other than the connection domain")
 }
 
-// defaultConfig mirrors an unset http_allowlist, which denies every HTTP action
-// request; Jenkins actions must keep working under it.
+// defaultConfig mirrors the defaults: http_allowlist is empty, which denies
+// every HTTP action request, and domain_allowlist is unset, which allows every
+// domain. Jenkins actions must keep working under it.
 var defaultConfig = &config.Config{Allowlist: []string{}}
 
-func TestHandlersEnforceConfiguredHTTPAllowlist(t *testing.T) {
+func TestHandlersEnforceConfiguredDomainAllowlist(t *testing.T) {
 	var hits atomic.Int32
 	jenkins := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
@@ -86,24 +87,24 @@ func TestHandlersEnforceConfiguredHTTPAllowlist(t *testing.T) {
 	defer jenkins.Close()
 
 	for _, allowlist := range [][]string{{}, {"jenkins.example.com"}, {"*.example.com"}} {
-		for name, handler := range newJenkinsHandlers(&config.Config{Allowlist: allowlist, AllowlistConfigured: true}) {
+		for name, handler := range newJenkinsHandlers(&config.Config{Allowlist: []string{"*"}, DomainAllowlist: allowlist}) {
 			t.Run(fmt.Sprintf("%s/%v", name, allowlist), func(t *testing.T) {
 				_, err := handler.Run(context.Background(), newJenkinsTask(map[string]interface{}{"jobName": "my-job"}), newJenkinsCredentials(jenkins.URL))
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "not allowed by runner policy")
+				assert.Contains(t, err.Error(), "private_action_runner.domain_allowlist")
 			})
 		}
 	}
-	assert.Zero(t, hits.Load(), "a domain outside a configured http_allowlist must not be requested")
+	assert.Zero(t, hits.Load(), "a domain outside a configured domain_allowlist must not be requested")
 }
 
-func TestHandlersReachConfiguredHTTPAllowlistDomain(t *testing.T) {
+func TestHandlersReachConfiguredDomainAllowlistDomain(t *testing.T) {
 	jenkins := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer jenkins.Close()
 
-	cfg := &config.Config{Allowlist: []string{"127.0.0.1"}, AllowlistConfigured: true}
+	cfg := &config.Config{Allowlist: []string{}, DomainAllowlist: []string{"127.0.0.1"}}
 	_, err := NewBuildJobHandler(cfg).Run(context.Background(), newJenkinsTask(map[string]interface{}{"jobName": "my-job"}), newJenkinsCredentials(jenkins.URL))
 	require.NoError(t, err)
 }

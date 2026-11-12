@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 
+	par "github.com/DataDog/datadog-agent/pkg/privateactionrunner"
 	"github.com/DataDog/datadog-agent/pkg/privateactionrunner/adapters/config"
 	"github.com/DataDog/datadog-agent/pkg/privateactionrunner/util"
 )
@@ -28,7 +29,7 @@ type Provider interface {
 type defaultHTTPClientProvider struct {
 	runnerConfig            *config.Config
 	enforceURLAllowlist     bool
-	urlAllowlistOptIn       bool
+	enforceDomainAllowlist  bool
 	sameOriginRedirectsOnly bool
 }
 
@@ -42,12 +43,11 @@ func WithURLAllowlistDisabled() ProviderOption {
 	}
 }
 
-// WithURLAllowlistIfConfigured enforces the URL allowlist only when the operator
-// set http_allowlist, so bundles that predate it keep working when it is unset.
-func WithURLAllowlistIfConfigured() ProviderOption {
+// WithDomainAllowlist makes all clients created by this provider refuse
+// requests, redirects included, to a host outside private_action_runner.domain_allowlist.
+func WithDomainAllowlist() ProviderOption {
 	return func(p *defaultHTTPClientProvider) {
-		p.enforceURLAllowlist = true
-		p.urlAllowlistOptIn = true
+		p.enforceDomainAllowlist = true
 	}
 }
 
@@ -70,8 +70,11 @@ func NewDefaultProvider(runnerConfig *config.Config, opts ...ProviderOption) Pro
 	return p
 }
 
-func (d defaultHTTPClientProvider) wrapClient(client HTTPClient) HTTPClient {
-	if d.enforceURLAllowlist && (!d.urlAllowlistOptIn || d.runnerConfig.AllowlistConfigured) {
+func (d defaultHTTPClientProvider) wrapClient(client *http.Client) HTTPClient {
+	if d.enforceDomainAllowlist {
+		client.Transport = &domainAllowlistTransport{inner: client.Transport, config: d.runnerConfig}
+	}
+	if d.enforceURLAllowlist {
 		return &urlAllowlistClient{inner: client, config: d.runnerConfig}
 	}
 	return client
@@ -112,4 +115,22 @@ func (c *urlAllowlistClient) Do(req *http.Request) (*http.Response, error) {
 		return nil, util.DefaultActionError(errors.New("request url is not allowed by runner policy: check your configuration file"))
 	}
 	return c.inner.Do(req)
+}
+
+// domainAllowlistTransport checks every request, including each redirect, against
+// the domain allowlist.
+type domainAllowlistTransport struct {
+	inner  http.RoundTripper
+	config *config.Config
+}
+
+func (t *domainAllowlistTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if host := req.URL.Hostname(); !t.config.IsDomainAllowed(host) {
+		// http.RoundTripper must close the request body, even on error.
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, fmt.Errorf("domain %q is not allowed by %s", host, par.DomainAllowlist)
+	}
+	return t.inner.RoundTrip(req)
 }

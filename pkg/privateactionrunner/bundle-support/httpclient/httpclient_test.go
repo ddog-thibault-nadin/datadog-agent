@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -156,5 +157,72 @@ func TestNewDefaultProvider_WithSameOriginRedirectsOnly(t *testing.T) {
 			assert.Equal(t, http.StatusOK, status)
 		})
 	}
+	assert.Zero(t, otherHits.Load())
+}
+
+func TestNewDefaultProvider_WithDomainAllowlist(t *testing.T) {
+	origin, otherHits := newRedirectServers(t)
+	originHost, err := url.Parse(origin.URL)
+	require.NoError(t, err)
+
+	t.Run("unset allows every domain", func(t *testing.T) {
+		client, err := NewDefaultProvider(&config.Config{}, WithURLAllowlistDisabled(), WithDomainAllowlist()).NewDefaultClient()
+		require.NoError(t, err)
+		status, err := doGet(t, client, origin.URL+"/final")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+	})
+
+	t.Run("set refuses unlisted domain before sending", func(t *testing.T) {
+		var hits atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(server.Close)
+
+		provider := NewDefaultProvider(&config.Config{DomainAllowlist: []string{"jenkins.example.com"}}, WithURLAllowlistDisabled(), WithDomainAllowlist())
+		defaultClient, err := provider.NewDefaultClient()
+		require.NoError(t, err)
+		customClient, err := provider.NewClient(&RunnerHttpClientConfig{})
+		require.NoError(t, err)
+		for name, client := range map[string]HTTPClient{"default client": defaultClient, "custom client": customClient} {
+			t.Run(name, func(t *testing.T) {
+				_, err := doGet(t, client, server.URL)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "private_action_runner.domain_allowlist")
+			})
+		}
+		assert.Zero(t, hits.Load())
+	})
+
+	t.Run("set refuses redirect to unlisted domain", func(t *testing.T) {
+		var targetHits atomic.Int32
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			targetHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(target.Close)
+		// Same loopback listener, but named by a hostname outside the list.
+		renamedTarget := strings.Replace(target.URL, originHost.Hostname(), "localhost", 1)
+		redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, renamedTarget, http.StatusFound)
+		}))
+		t.Cleanup(redirector.Close)
+
+		// Same-origin redirects stay off so only the domain allowlist can refuse the hop.
+		provider := NewDefaultProvider(&config.Config{DomainAllowlist: []string{originHost.Hostname()}}, WithURLAllowlistDisabled(), WithDomainAllowlist())
+		client, err := provider.NewDefaultClient()
+		require.NoError(t, err)
+
+		status, err := doGet(t, client, origin.URL+"/moved")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		_, err = doGet(t, client, redirector.URL)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `domain "localhost" is not allowed`)
+		assert.Zero(t, targetHits.Load())
+	})
 	assert.Zero(t, otherHits.Load())
 }

@@ -23,7 +23,7 @@ import (
 type Config struct {
 	ActionsAllowlist                   ActionsAllowlist
 	Allowlist                          []string
-	AllowlistConfigured                bool
+	DomainAllowlist                    []string
 	AllowIMDSEndpoint                  bool
 	KubernetesAllowedCustomResources   []string
 	RShellAllowedPaths                 []string
@@ -140,6 +140,25 @@ func (c *Config) IsURLInAllowlist(urlStr string) bool {
 		}
 	}
 
+	return false
+}
+
+// IsDomainAllowed reports whether hostname matches an exact or glob entry of
+// DomainAllowlist, case-insensitively. A nil DomainAllowlist allows every domain.
+func (c *Config) IsDomainAllowed(hostname string) bool {
+	if c.DomainAllowlist == nil {
+		return true
+	}
+	hostname = strings.ToLower(hostname)
+	for _, pattern := range c.DomainAllowlist {
+		pattern = strings.ToLower(pattern)
+		if pattern == hostname {
+			return true
+		}
+		if matcher, err := glob.Compile(pattern); err == nil && matcher.Match(hostname) {
+			return true
+		}
+	}
 	return false
 }
 

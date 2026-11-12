@@ -18,10 +18,15 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/privateactionrunner/libs/privateconnection"
 )
 
-// newHTTPClientProvider checks http_allowlist on the first request only, so
-// redirects are kept on the connection domain's origin.
+// newHTTPClientProvider applies domain_allowlist rather than http_allowlist,
+// which is scoped to HTTP actions.
 func newHTTPClientProvider(runnerConfig *config.Config) httpclient.Provider {
-	return httpclient.NewDefaultProvider(runnerConfig, httpclient.WithURLAllowlistIfConfigured(), httpclient.WithSameOriginRedirectsOnly())
+	return httpclient.NewDefaultProvider(
+		runnerConfig,
+		httpclient.WithURLAllowlistDisabled(),
+		httpclient.WithDomainAllowlist(),
+		httpclient.WithSameOriginRedirectsOnly(),
+	)
 }
 
 type DomainAndHeaders struct {
